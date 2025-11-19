@@ -922,6 +922,10 @@ def _print_dry_run_results(result: Dict[str, Any]) -> None:
         print(f"\n⬆️  Packages to upgrade: {len(diff['packages_to_upgrade'])}")
         _print_package_list(diff['packages_to_upgrade'])
     
+    if diff['packages_to_downgrade']:
+        print(f"\n⬇️  Packages to downgrade: {len(diff['packages_to_downgrade'])}")
+        _print_package_list(diff['packages_to_downgrade'])
+    
     if diff['preferences_changed']:
         print(f"\n⚙️  Preferences to change: {len(diff['preferences_changed'])}")
         for key in diff['preferences_changed']:
