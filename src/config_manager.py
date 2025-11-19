@@ -581,6 +581,7 @@ class ConfigManager:
         summary = {
             'installed': [],
             'upgraded': [],
+            'downgraded': [],
             'failed': [],
             'skipped': [],
             'preferences_updated': False
@@ -638,6 +639,8 @@ class ConfigManager:
                 if success:
                     if pkg in diff['packages_to_install']:
                         summary['installed'].append(pkg['name'])
+                    elif pkg in diff['packages_to_downgrade']:
+                        summary['downgraded'].append(pkg['name'])
                     else:
                         summary['upgraded'].append(pkg['name'])
                 else:
@@ -888,6 +891,8 @@ def main():
                     print(f"📦 Installed: {len(result['installed'])} packages")
                 if result['upgraded']:
                     print(f"⬆️  Upgraded: {len(result['upgraded'])} packages")
+                if result.get('downgraded'):
+                    print(f"⬇️  Downgraded: {len(result['downgraded'])} packages")
                 if result['failed']:
                     print(f"❌ Failed: {len(result['failed'])} packages")
                     for pkg in result['failed']:

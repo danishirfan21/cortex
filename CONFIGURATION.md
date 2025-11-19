@@ -261,7 +261,7 @@ git push
 
 Name files descriptively:
 
-```
+```text
 dev-machine-john.yaml
 production-web-server.yaml
 ml-training-gpu-rig.yaml
@@ -313,7 +313,7 @@ python3 config_manager.py export \
 
 Maintain separate configs for different environments:
 
-```
+```text
 configs/
 ├── development.yaml
 ├── staging.yaml
@@ -417,7 +417,10 @@ result = manager.import_configuration(
     dry_run=True
 )
 
-# Check diff
+# Check diff - load the config file first
+import yaml
+with open('config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
 diff = manager.diff_configuration(config)
 print(f"To install: {len(diff['packages_to_install'])}")
 ```
@@ -579,9 +582,9 @@ Cortex Linux Configuration Management is part of the Cortex Linux project.
 
 ## Support
 
-- **Issues**: https://github.com/cortexlinux/cortex/issues
-- **Discord**: https://discord.gg/uCqHvxjU83
-- **Email**: mike@cortexlinux.com
+- **Issues**: [https://github.com/cortexlinux/cortex/issues](https://github.com/cortexlinux/cortex/issues)
+- **Discord**: [https://discord.gg/uCqHvxjU83](https://discord.gg/uCqHvxjU83)
+- **Email**: [mike@cortexlinux.com](mailto:mike@cortexlinux.com)
 
 ---
 
