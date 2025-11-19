@@ -758,10 +758,6 @@ class ConfigManager:
         try:
             if source == self.SOURCE_APT:
                 cmd = ['sudo', 'apt-get', 'install', '-y', f'{name}={version}' if version else name]
-                if not version:
-                    cmd = ['sudo', 'apt-get', 'install', '-y', name]
-                else:
-                    cmd = ['sudo', 'apt-get', 'install', '-y', f'{name}={version}']
             elif source == self.SOURCE_PIP:
                 cmd = ['pip3', 'install', f'{name}=={version}'] if version else ['pip3', 'install', name]
             elif source == self.SOURCE_NPM:
