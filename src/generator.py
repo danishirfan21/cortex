@@ -9,17 +9,28 @@ Security features:
 - Parameter sanitization for template injection prevention
 - Atomic file operations with file locking
 - Proper logging instead of print statements
+
+Platform notes:
+- File locking uses fcntl (Unix) with fallback for Windows
+- Advisory locking may not work on NFS; use local filesystems for best results
 """
 
-import fcntl
 import logging
 import os
 import re
+import sys
 import tempfile
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, ClassVar
+
+# Platform-specific file locking
+if sys.platform != 'win32':
+    import fcntl
+    HAS_FCNTL = True
+else:
+    HAS_FCNTL = False
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -57,7 +68,6 @@ class ConfigGenerator:
     
     # Pre-compiled regex patterns for validation (performance optimization)
     SAFE_PARAM_PATTERN: ClassVar[re.Pattern] = re.compile(r'^[a-zA-Z0-9._\-:/@]+$')
-    SAFE_PATH_PATTERN: ClassVar[re.Pattern] = re.compile(r'^[a-zA-Z0-9._\-/]+$')
     DANGEROUS_PATTERNS: ClassVar[List[re.Pattern]] = [
         re.compile(r'[;&|`$(){}]'),  # Shell metacharacters
         re.compile(r'\.\./'),         # Directory traversal
@@ -252,12 +262,16 @@ class ConfigGenerator:
     
     def _atomic_write(self, path: Path, content: str) -> None:
         """
-        Write content to file atomically with file locking.
+        Write content to file atomically with optional file locking.
         
         This method prevents race conditions (TOCTOU) by:
         1. Writing to a temporary file
-        2. Using file locking during the write
+        2. Using file locking during the write (Unix only, advisory)
         3. Atomically moving the temp file to the target
+        
+        Note: File locking uses fcntl.flock which provides advisory locking.
+        This may not work reliably on NFS or other networked filesystems.
+        For best results, use local filesystems.
         
         Args:
             path: Target file path.
@@ -281,15 +295,17 @@ class ConfigGenerator:
                 suffix='_' + path.name
             )
             
-            # Write with exclusive lock
+            # Write with exclusive lock (if available on this platform)
             with os.fdopen(temp_fd, 'w') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                if HAS_FCNTL:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
                 try:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    if HAS_FCNTL:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
             
             temp_fd = None  # Prevent double close
             
@@ -310,10 +326,14 @@ class ConfigGenerator:
     
     def _create_backup(self, path: Path) -> Optional[Path]:
         """
-        Create a backup of existing file using atomic operations.
+        Create a backup of existing file.
         
-        This method uses atomic operations to prevent TOCTOU race conditions
-        between checking if file exists and creating backup.
+        This method attempts to use hard links for atomic backup when possible.
+        Falls back to regular file copy on filesystems that don't support
+        hard links (e.g., cross-device, some Windows setups).
+        
+        Note: The fallback copy operation is not atomic, but is still safe
+        for backup purposes as it only reads from the source file.
         
         Args:
             path: Path to file to backup.
@@ -328,13 +348,13 @@ class ConfigGenerator:
         backup_path = path.with_suffix(f'.backup_{timestamp}{path.suffix}')
         
         try:
-            # Use shutil.copy2 with os.link for atomic copy when possible
-            # First try hard link (atomic), fall back to copy
+            # First try hard link (atomic on same filesystem)
+            # Falls back to copy on cross-device or unsupported filesystems
             try:
                 os.link(path, backup_path)
                 logger.info("Created backup (hard link): %s", backup_path)
             except OSError:
-                # Fall back to copy (not atomic, but still safe with temp file)
+                # Fall back to copy (not atomic, but safe for backup reads)
                 shutil.copy2(path, backup_path)
                 logger.info("Created backup (copy): %s", backup_path)
             
