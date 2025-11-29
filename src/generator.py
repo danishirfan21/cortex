@@ -68,14 +68,15 @@ class ConfigGenerator:
     
     # Pre-compiled regex patterns for validation (performance optimization)
     SAFE_PARAM_PATTERN: ClassVar[re.Pattern] = re.compile(r'^[a-zA-Z0-9._\-:/@]+$')
-    DANGEROUS_PATTERNS: ClassVar[List[re.Pattern]] = [
-        re.compile(r'[;&|`$(){}]'),  # Shell metacharacters
-        re.compile(r'\.\./'),         # Directory traversal
-        re.compile(r'\.\.\\'),        # Windows directory traversal
-        re.compile(r'^/etc/'),        # System config files
-        re.compile(r'^/usr/'),        # System binaries
-        re.compile(r'^/bin/'),        # System binaries
-        re.compile(r'^/sbin/'),       # System binaries
+    DANGEROUS_CHARS_PATTERN: ClassVar[re.Pattern] = re.compile(r'[;&|`$(){}\\]')
+    DANGEROUS_PATTERNS: ClassVar[List[tuple]] = [
+        (re.compile(r'[;&|`$(){}]'), 'shell metacharacter'),
+        (re.compile(r'\.\./'), 'directory traversal sequence (..)'),
+        (re.compile(r'\.\.\\'), 'directory traversal sequence (..)'),
+        (re.compile(r'^/etc/'), 'system config directory (/etc/)'),
+        (re.compile(r'^/usr/'), 'system directory (/usr/)'),
+        (re.compile(r'^/bin/'), 'system directory (/bin/)'),
+        (re.compile(r'^/sbin/'), 'system directory (/sbin/)'),
     ]
     
     def __init__(
@@ -158,10 +159,10 @@ class ConfigGenerator:
             raise PathSecurityError(f"Invalid path '{output_path}': {e}")
         
         # Check for dangerous patterns in the original path
-        for pattern in self.DANGEROUS_PATTERNS:
+        for pattern, description in self.DANGEROUS_PATTERNS:
             if pattern.search(output_path):
                 raise PathSecurityError(
-                    f"Path '{output_path}' contains dangerous pattern"
+                    f"Path '{output_path}' contains {description}"
                 )
         
         # Verify path is within allowed directories
@@ -244,9 +245,8 @@ class ConfigGenerator:
         Raises:
             TemplateSecurityError: If value contains dangerous content.
         """
-        # Check for shell metacharacters
-        dangerous_chars = re.compile(r'[;&|`$(){}\\]')
-        if dangerous_chars.search(value):
+        # Check for shell metacharacters (using pre-compiled pattern)
+        if self.DANGEROUS_CHARS_PATTERN.search(value):
             raise TemplateSecurityError(
                 f"Parameter '{key}' contains dangerous characters: {value!r}"
             )
@@ -307,8 +307,6 @@ class ConfigGenerator:
                     if HAS_FCNTL:
                         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
             
-            temp_fd = None  # Prevent double close
-            
             # Atomic rename
             os.rename(temp_path, path)
             logger.info("Atomically wrote file: %s", path)
@@ -344,7 +342,7 @@ class ConfigGenerator:
         if not path.exists():
             return None
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         backup_path = path.with_suffix(f'.backup_{timestamp}{path.suffix}')
         
         try:
@@ -387,6 +385,7 @@ class ConfigGenerator:
         Raises:
             PathSecurityError: If output path is invalid.
             TemplateSecurityError: If parameters are invalid.
+            GeneratorError: If backup creation or atomic write fails.
         """
         # Validate output path
         validated_path = self._validate_output_path(output_path)
@@ -470,6 +469,7 @@ class ConfigGenerator:
         Raises:
             PathSecurityError: If output path is invalid.
             TemplateSecurityError: If parameters are invalid.
+            GeneratorError: If backup creation or atomic write fails.
         """
         # Validate output path
         validated_path = self._validate_output_path(output_path)
@@ -559,16 +559,19 @@ class ConfigGenerator:
         
         template_path = self.templates_dir / template_name
         
-        if not template_path.exists():
-            raise GeneratorError(f"Template not found: {template_path}")
+        # Resolve template path once and use consistently to prevent TOCTOU
+        resolved_template = template_path.resolve()
         
         # Ensure template is within templates directory
         try:
-            template_path.resolve().relative_to(self.templates_dir)
+            resolved_template.relative_to(self.templates_dir)
         except ValueError:
             raise PathSecurityError(
                 f"Template path escapes templates directory: {template_name}"
             )
+        
+        if not resolved_template.exists():
+            raise GeneratorError(f"Template not found: {resolved_template}")
         
         # Validate output path
         validated_output = self._validate_output_path(output_path)
@@ -582,9 +585,10 @@ class ConfigGenerator:
         
         # Read and process template
         try:
-            template_content = template_path.read_text()
+            template_content = resolved_template.read_text()
             
             # Simple placeholder substitution (no eval/exec)
+            # Only handles string, int, float, bool - lists/dicts are logged as warning
             content = template_content
             for key, value in validated_params.items():
                 placeholder = f'${{{key}}}'
@@ -592,6 +596,12 @@ class ConfigGenerator:
                     content = content.replace(placeholder, value)
                 elif isinstance(value, (int, float, bool)):
                     content = content.replace(placeholder, str(value))
+                elif isinstance(value, (list, dict)):
+                    logger.warning(
+                        "Template parameter '%s' is a %s and cannot be substituted directly. "
+                        "Consider serializing complex types before passing to template.",
+                        key, type(value).__name__
+                    )
             
             # Write atomically
             self._atomic_write(validated_output, content)
@@ -622,7 +632,6 @@ def setup_logging(level: str = 'INFO') -> None:
 def main():
     """CLI entry point for config generator."""
     import argparse
-    import sys
     
     parser = argparse.ArgumentParser(description='Cortex Configuration Generator')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -651,10 +660,11 @@ def main():
                                help='Output file path')
     compose_parser.add_argument('--service', default='app',
                                help='Service name')
-    compose_parser.add_argument('--image',
-                               help='Docker image (conflicts with --build)')
-    compose_parser.add_argument('--build',
-                               help='Build context (conflicts with --image)')
+    image_build_group = compose_parser.add_mutually_exclusive_group()
+    image_build_group.add_argument('--image',
+                               help='Docker image (mutually exclusive with --build)')
+    image_build_group.add_argument('--build',
+                               help='Build context (mutually exclusive with --image)')
     compose_parser.add_argument('--ports', nargs='*',
                                help='Port mappings')
     compose_parser.add_argument('--no-backup', action='store_true',
